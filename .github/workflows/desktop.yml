@@ -67,6 +67,9 @@ jobs:
         if: runner.os == 'Windows'
         working-directory: frontend
         run: npm run desktop:build -- --target ${{ matrix.target }} --no-bundle
+      - name: Verify Windows single-file GUI executable
+        if: runner.os == 'Windows'
+        run: python desktop/check_windows.py src-tauri/target/${{ matrix.target }}/release/bookskill.exe
       - name: Stage packages
         shell: bash
         run: |

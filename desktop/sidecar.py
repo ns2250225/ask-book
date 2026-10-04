@@ -35,6 +35,28 @@ def create_app(token, origin):
     return app
 
 
+def parent_alive(pid):
+    if sys.platform == 'win32':
+        import ctypes
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+        kernel.OpenProcess.restype = ctypes.c_void_p
+        kernel.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+        handle = kernel.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+        if not handle:
+            return False
+        try:
+            return kernel.WaitForSingleObject(handle, 0) == 258  # WAIT_TIMEOUT
+        finally:
+            kernel.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+
+
 async def serve(args):
     import uvicorn
     token = os.environ.pop('BOOKSKILL_SESSION')
@@ -57,15 +79,28 @@ async def serve(args):
     sock.listen(128)
     sock.setblocking(False)
     task = asyncio.create_task(server.serve(sockets=[sock]))
+    async def watch_parent():
+        while True:
+            await asyncio.sleep(1)
+            if not parent_alive(args.parent_pid):
+                server.should_exit = True
+                return
+    watcher = asyncio.create_task(watch_parent()) if args.parent_pid else None
     try:
         while not server.started:
             if task.done():
                 await task
                 raise RuntimeError('Backend exited before startup')
             await asyncio.sleep(.05)
-        Path(args.ready_file).write_text(origin, encoding='utf-8')
+        ready = Path(args.ready_file)
+        temp = ready.with_suffix('.tmp')
+        temp.write_text(origin, encoding='utf-8')
+        temp.replace(ready)  # The native host must never observe an empty ready file.
         await task
     finally:
+        if watcher:
+            watcher.cancel()
+            await asyncio.gather(watcher, return_exceptions=True)
         sock.close()
         Path(args.ready_file).unlink(missing_ok=True)
 
@@ -75,6 +110,7 @@ def main():
     parser.add_argument('--data-dir', required=True)
     parser.add_argument('--ready-file', required=True)
     parser.add_argument('--port', type=int, default=17863)
+    parser.add_argument('--parent-pid', type=int, default=0)
     args = parser.parse_args()
     data = Path(args.data_dir)
     data.mkdir(parents=True, exist_ok=True)

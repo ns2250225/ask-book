@@ -82,6 +82,8 @@ fn start_backend(data: &Path) -> Result<(Backend, String), Box<dyn std::error::E
         .arg(&ready)
         .arg("--port")
         .arg(PORT.to_string())
+        .arg("--parent-pid")
+        .arg(std::process::id().to_string())
         .env("BOOKSKILL_SESSION", &token)
         .stdout(Stdio::null())
         .stderr(Stdio::null());

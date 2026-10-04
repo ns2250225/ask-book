@@ -25,7 +25,7 @@ def main():
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0))
             port = sock.getsockname()[1]
-        process = subprocess.Popen([str(executable), '--data-dir', folder, '--ready-file', str(ready), '--port', str(port)],
+        process = subprocess.Popen([str(executable), '--data-dir', folder, '--ready-file', str(ready), '--port', str(port), '--parent-pid', str(os.getpid())],
             env={**os.environ, 'BOOKSKILL_SESSION': token})
         origin = f'http://127.0.0.1:{port}'
         opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
