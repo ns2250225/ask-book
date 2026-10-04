@@ -62,11 +62,11 @@ jobs:
       - name: Build macOS DMG
         if: runner.os == 'macOS'
         working-directory: frontend
-        run: npx tauri build --target ${{ matrix.target }} --bundles dmg
+        run: npm run desktop:build -- --target ${{ matrix.target }} --bundles dmg
       - name: Build standalone Windows EXE
         if: runner.os == 'Windows'
         working-directory: frontend
-        run: npx tauri build --target ${{ matrix.target }} --no-bundle
+        run: npm run desktop:build -- --target ${{ matrix.target }} --no-bundle
       - name: Stage packages
         shell: bash
         run: |

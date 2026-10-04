@@ -7,9 +7,9 @@
     "dev": "vite --host 127.0.0.1",
     "build": "vue-tsc -b && vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "tauri": "tauri",
-    "desktop:dev": "tauri dev",
-    "desktop:build": "tauri build"
+    "tauri": "cd .. && tauri",
+    "desktop:dev": "cd .. && tauri dev",
+    "desktop:build": "cd .. && tauri build"
   },
   "dependencies": {
     "dompurify": "^3.2.4",
