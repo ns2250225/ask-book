@@ -179,3 +179,44 @@ BOOKSKILL_DATA=/absolute/path/to/data ./run.sh
 - 生成校验检查结构、链接和预算，不保证模型结论完全正确。关键观点仍应核对原文。
 - 闪卡、测验与学习模式通过问书会话生成和互动，尚无独立的卡片复习调度系统；章节探索展示真实章节结构。
 - Skill 市场、社区、付费、跨用户协作和自动购书属于后续范围。完整产品背景见 [产品需求文档](prd.md)。
+
+## 桌面应用（Vue 3 + Tauri 2 + Python Sidecar）
+
+桌面端复用现有 Vue 3 界面与 FastAPI 后端。Tauri 提供原生窗口，Python 使用 PyInstaller 打包，不要求用户安装 Python 或 Node.js。
+
+- **macOS**：分别构建 Apple Silicon（arm64）与 Intel（x64）的 DMG，拖入「应用程序」运行。
+- **Windows x64**：`BookSkill-Windows-x64.exe` 是直接运行的便携单文件，主程序与 Python 子进程均不显示控制台窗口；Sidecar 已嵌入 EXE，首次运行自动释放到用户应用数据目录。需要系统安装 WebView2 Runtime（Windows 11 通常已包含）；无需另装 Python。
+- 启动时等待后端就绪，再显示窗口；关闭窗口时终止后台服务。启动故障通过原生对话框显示，日志保存在数据目录 `desktop.log`。
+- 书籍、SQLite 数据库和 Sidecar 缓存保存于 Tauri 的 `app_local_data_dir`：macOS 为 `~/Library/Application Support/com.bookskill.desktop`，Windows 为 `%LOCALAPPDATA%\com.bookskill.desktop`。桌面端独立于 Web 版的仓库 `data/`，可通过 Skill ZIP 导出/导入转移书籍。
+- API Key 仍保存于 WebView 的 IndexedDB；服务使用稳定的 `http://127.0.0.1:17863` 来源，确保重启后设置保留。该端口被占用时会提示关闭冲突程序。
+- 服务仅监听本机，通过每次启动随机生成的 HttpOnly 会话 Cookie 验证访问，并检查 Host 与写操作 Origin。桌面页面不开放 Tauri IPC 权限。导出 Skill 使用原生保存对话框。
+
+### 本地构建
+
+安装 Rust 稳定版、Node.js 22、Python 3.12，以及平台构建工具（macOS 的 Xcode Command Line Tools；Windows 的 Visual Studio C++ Build Tools 和 WebView2）。在仓库根目录执行：
+
+```bash
+python -m venv .venv
+# macOS/Linux: source .venv/bin/activate
+# Windows PowerShell: .venv\Scripts\Activate.ps1
+python -m pip install -r requirements.lock pyinstaller==6.22.0
+cd frontend
+npm ci
+npm run build
+cd ..
+python desktop/build_sidecar.py
+python desktop/smoke_test.py
+cd frontend
+# macOS DMG
+npm run desktop:build -- --bundles dmg
+# Windows 便携 EXE（输出 src-tauri/target/release/bookskill.exe）
+npm run desktop:build -- --no-bundle
+```
+
+`npm run desktop:dev` 启动桌面调试窗口；其前端与 Sidecar 使用已打包版本，修改 Vue/Python 后须重新执行前端构建和 `build_sidecar.py`。Sidecar 必须在对应操作系统与 CPU 架构上构建。
+
+### GitHub Actions 构建与下载
+
+[Desktop builds](https://github.com/ns2250225/ask-book/actions/workflows/desktop.yml) 在推送到 `main`、提交 PR 或手动运行时构建三个平台。每个任务先运行后端测试、Vue 类型检查和冻结 Sidecar 的冒烟测试，再构建安装包。进入成功的运行页面，在 **Artifacts** 下载 `BookSkill-macOS-arm64`、`BookSkill-macOS-x64` 或 `BookSkill-Windows-x64`；解压 Artifact 后得到 DMG / EXE。
+
+推送 `desktop-v*` 标签（例如 `desktop-v1.0.0`）会在所有平台成功后自动创建 GitHub Release 并上传三个文件。当前构建未配置开发者证书或 Apple 公证，系统首次运行可能要求通过「隐私与安全性」允许打开，Windows 可能显示 SmartScreen 提示。

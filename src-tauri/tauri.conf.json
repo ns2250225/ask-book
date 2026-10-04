@@ -1,0 +1,16 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "BookSkill",
+  "version": "1.0.0",
+  "identifier": "com.bookskill.desktop",
+  "build": { "frontendDist": "../frontend/dist" },
+  "app": { "windows": [], "security": { "capabilities": [] } },
+  "bundle": {
+    "active": true,
+    "targets": ["dmg"],
+    "icon": ["icons/icon.png", "icons/icon.icns", "icons/icon.ico"],
+    "category": "Education",
+    "shortDescription": "问书 · 本地阅读与知识蒸馏",
+    "macOS": { "minimumSystemVersion": "11.0" }
+  }
+}

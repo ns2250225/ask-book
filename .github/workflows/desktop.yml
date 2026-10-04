@@ -1,0 +1,99 @@
+name: Desktop builds
+on:
+  push:
+    branches: [main]
+    tags: ['desktop-v*']
+    paths-ignore: ['demo.gif', 'docs/**', '**/*.md']
+  pull_request:
+    paths-ignore: ['demo.gif', 'docs/**', '**/*.md']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+            label: macOS-arm64
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            label: macOS-x64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: Windows-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.lock pyinstaller==6.22.0
+      - name: Backend tests
+        run: python -m pytest -q
+      - name: Build Vue frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+      - name: Freeze Python sidecar
+        run: python desktop/build_sidecar.py
+      - name: Smoke test frozen sidecar
+        run: python desktop/smoke_test.py
+      - name: Build macOS DMG
+        if: runner.os == 'macOS'
+        working-directory: frontend
+        run: npx tauri build --target ${{ matrix.target }} --bundles dmg
+      - name: Build standalone Windows EXE
+        if: runner.os == 'Windows'
+        working-directory: frontend
+        run: npx tauri build --target ${{ matrix.target }} --no-bundle
+      - name: Stage packages
+        shell: bash
+        run: |
+          mkdir -p release
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp src-tauri/target/${{ matrix.target }}/release/bookskill.exe release/BookSkill-Windows-x64.exe
+          else
+            cp src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg release/
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BookSkill-${{ matrix.label }}
+          path: release/*
+          if-no-files-found: error
+          retention-days: 30
+  release:
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true

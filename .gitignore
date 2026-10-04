@@ -10,3 +10,7 @@ __pycache__/
 artifacts/
 .env.*
 *.tsbuildinfo
+desktop/build/
+desktop/dist/
+src-tauri/target/
+src-tauri/binaries/
