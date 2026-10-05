@@ -76,17 +76,42 @@ async def test_generation_checkpoint_resume_and_key_security(client,monkeypatch)
 
 @pytest.mark.asyncio
 async def test_interruption_preserves_checkpoint(client,monkeypatch):
-    bid=upload(client);calls=0
+    bid=upload(client)
     async def interrupted(config,prompt,system=''):
-        nonlocal calls
-        calls+=1
-        if calls==3:raise llm.LLMError('401 · API Key 无效')
+        # Trigger by prompt content, not call order: parallel workers complete
+        # independent steps before the failing one, and all of them checkpoint.
+        if '生成按需加载的蒸馏知识' in prompt:
+            if '第 2 章' in prompt:raise llm.LLMError('401 · API Key 无效')
+            return {'content':'# 章节知识\n\n知识需要上下文。','topics':['上下文']}
         return {'kind':'其他','summary':'上下文','concepts':[]}
     monkeypatch.setattr(llm,'json_chat',interrupted)
     await worker.generate_skill(bid,llm.Config(**CONFIG))
     assert db.book(bid)['status']=='failed'
-    assert db.one('SELECT count(*) n FROM checkpoints WHERE bookId=?',(bid,))['n']==2
+    # classify + chapter 1 map + chapter 1 file + chapter 2 map
+    assert db.one('SELECT count(*) n FROM checkpoints WHERE bookId=?',(bid,))['n']==4
     assert db.book(bid)['progress']<100
+
+
+@pytest.mark.asyncio
+async def test_parallel_generation_overlaps_llm_calls(client,monkeypatch):
+    bid=upload(client);current=0;peak=0
+    async def slow(config,prompt,system=''):
+        nonlocal current,peak
+        current+=1;peak=max(peak,current)
+        await asyncio.sleep(.05)
+        current-=1
+        if '判断书籍类型' in prompt:return {'kind':'商业'}
+        if '生成 Skill 的核心知识层' in prompt:
+            return {'core':'### 上下文框架\n当复用知识时，先确认来源、条件与局限（第一章）。','voice':'先确认依据，再讨论应用。','scope':'只覆盖这份阅读文本。','questions':{'快速了解':['核心知识是什么？']}}
+        if '生成按需加载的蒸馏知识' in prompt:
+            return {'content':'# 章节知识\n\n## 核心思想\n知识需要上下文。','topics':['上下文']}
+        if '返回 {"content":"Markdown"}' in prompt:
+            return {'content':'# 知识工具\n\n当复用知识时，先确认来源与条件，因为观点有适用边界（第一章）。'}
+        return {'summary':'知识与实践','concepts':[{'name':'上下文','description':'保留知识来源','chapter':'第一章'}]}
+    monkeypatch.setattr(llm,'json_chat',slow)
+    await worker.generate_skill(bid,llm.Config(**CONFIG))
+    assert db.book(bid)['status']=='ready',db.book(bid)
+    assert peak>=2,peak
 
 
 def test_import_export_cascade_and_zip_safety(client):
@@ -241,6 +266,71 @@ async def test_router_uses_topic_index_and_decision_layer(client):
     values=await routed_knowledge(bid,'如何应用复盘',llm.Config(**CONFIG))
     assert [v['path'] for v in values[:3]]==['cheatsheet.md','patterns.md','chapters/ch003.md']
     assert (await routed_knowledge(bid,'第3章',llm.Config(**CONFIG)))[0]['path']=='chapters/ch003.md'
+
+
+def test_multi_turn_history_retrieval_and_retry_dedup(client,monkeypatch):
+    import backend.agent as agent
+    bid=client.post('/api/demo').json()['id'];cid=client.post(f'/api/books/{bid}/conversations',json={'title':'新的对话'}).json()['id']
+    calls=[];queries=[]
+    async def fake(config,messages,tools=None,max_tokens=None):
+        calls.append([(m['role'],str(m.get('content',''))) for m in messages])
+        if len(calls)==1:raise llm.LLMError('401 · API Key 无效')
+        return {'role':'assistant','content':'回答 '+str(len(calls))}
+    async def fake_hybrid(book_id,query,kind,config):
+        queries.append(query);return []
+    monkeypatch.setattr(llm,'chat',fake);monkeypatch.setattr(agent,'hybrid',fake_hybrid)
+    def ask(q):assert client.post(f'/api/books/{bid}/conversations/{cid}/ask',json={'question':q,'config':CONFIG}).status_code==200
+    ask('第三章的核心框架是什么？')
+    ask('第三章的核心框架是什么？')
+    userish=[c for r,c in calls[-1] if r in ('user','assistant')]
+    assert sum('第三章的核心框架是什么' in c for c in userish)==1
+    ask('它和第五章有什么联系？')
+    assert any(r=='assistant' and '回答 2' in c for r,c in calls[-1])
+    assert any('它和第五章有什么联系' in q and '第三章的核心框架' in q for q in queries)
+    assert client.get(f'/api/books/{bid}/conversations/{cid}/messages').json()[-1]['content']=='回答 3'
+
+
+@pytest.mark.asyncio
+async def test_dsml_tool_markup_becomes_structured_calls(monkeypatch):
+    import httpx
+    real=httpx.AsyncClient
+    content=('<｜｜DSML｜｜ calls> <｜｜DSML｜｜ invoke name="search_book"> '
+             '<｜｜DSML｜｜ parameter name="query" string="true">罗辑 威胁 三体世界 把坐标 广播出去 同归于尽</｜｜DSML｜｜ parameter> '
+             '</｜｜DSML｜｜ invoke> <｜｜DSML｜｜ invoke name="get_book_structure"> </｜｜DSML｜｜ invoke> </｜｜DSML｜｜ calls>')
+    def respond(request):
+        return httpx.Response(200,json={'choices':[{'message':{'role':'assistant','content':content}}]})
+    monkeypatch.setattr(llm.httpx,'AsyncClient',lambda **kwargs:real(transport=httpx.MockTransport(respond),**kwargs))
+    message=await llm.chat(llm.Config(**CONFIG),[{'role':'user','content':'罗辑的主张是什么'}])
+    calls=message['tool_calls']
+    assert [c['function']['name'] for c in calls]==['search_book','get_book_structure']
+    assert json.loads(calls[0]['function']['arguments'])=={'query':'罗辑 威胁 三体世界 把坐标 广播出去 同归于尽'}
+    assert calls[1]['function']['arguments']=='{}'
+    assert 'DSML' not in message['content']
+
+
+def test_agent_executes_dsml_tool_markup_and_never_shows_it(client,monkeypatch):
+    import httpx
+    real=httpx.AsyncClient;requests=[]
+    def respond(request):
+        payload=json.loads(request.content);requests.append(payload)
+        if len(requests)==1:
+            content=('<｜｜DSML｜｜ calls> <｜｜DSML｜｜ invoke name="search_book"> '
+                '<｜｜DSML｜｜ parameter name="query" string="true">复盘 反思 结果</｜｜DSML｜｜ parameter> </｜｜DSML｜｜ invoke> </｜｜DSML｜｜ calls>')
+        else: content='根据本书：每周复盘一次，比较预期与实际结果。[1]'
+        return httpx.Response(200,json={'choices':[{'message':{'role':'assistant','content':content}}]})
+    monkeypatch.setattr(llm.httpx,'AsyncClient',lambda **kwargs:real(transport=httpx.MockTransport(respond),**kwargs))
+    bid=client.post('/api/demo').json()['id'];cid=client.post(f'/api/books/{bid}/conversations',json={'title':'新的对话'}).json()['id']
+    r=client.post(f'/api/books/{bid}/conversations/{cid}/ask',json={'question':'这本书怎么谈复盘？','config':CONFIG})
+    assert r.status_code==200
+    events=[json.loads(s) for s in r.text.splitlines()]
+    answer=next(e for e in events if e['type']=='answer')['message']
+    assert 'DSML' not in answer['content'];assert 'invoke' not in answer['content']
+    assert answer['references'],answer
+    second=requests[1]['messages']
+    announced=next(m for m in second if m.get('tool_calls'))
+    assert announced['tool_calls'][0]['function']['name']=='search_book'
+    tool_results=[m for m in second if m.get('role')=='tool']
+    assert tool_results and '复盘' in tool_results[0]['content']
 
 
 def test_import_upstream_style_without_original_text(client):

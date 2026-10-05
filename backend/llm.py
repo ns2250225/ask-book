@@ -20,6 +20,21 @@ class Config(BaseModel):
 
 class LLMError(Exception): pass
 
+# Some gateways stream the model's tool calls back as inline markup in the
+# text content instead of the structured tool_calls field. Left alone, the
+# raw tokens reach the chat and the tools never run.
+DSML_TAG=r'<\s*｜+\s*DSML\s*｜+\s*'
+DSML_CLEAN=re.compile(r'</?\s*｜+\s*DSML\s*｜+[^>]*>')
+
+def parse_dsml_calls(content):
+    invoke=re.compile(DSML_TAG+r'invoke\s+name="([^"]+)"\s*>(.*?)</\s*｜+\s*DSML\s*｜+\s*invoke\s*>',re.S|re.I)
+    parameter=re.compile(DSML_TAG+r'parameter\s+name="([^"]+)"[^>]*>(.*?)</\s*｜+\s*DSML\s*｜+\s*parameter\s*>',re.S|re.I)
+    calls=[]
+    for name,body in invoke.findall(content):
+        args={k:v.strip() for k,v in parameter.findall(body)}
+        calls.append({'id':'dsml-'+str(len(calls)+1),'type':'function','function':{'name':name,'arguments':json.dumps(args,ensure_ascii=False)}})
+    return calls,DSML_CLEAN.sub('',content).strip()
+
 async def chat(config, messages, tools=None, max_tokens=None, json_mode=False):
     body={'model':config.model,'messages':messages,'temperature':config.temperature,'max_tokens':max_tokens or config.maxTokens}
     if json_mode: body['response_format']={'type':'json_object'}
@@ -46,6 +61,10 @@ async def chat(config, messages, tools=None, max_tokens=None, json_mode=False):
                 message=value['choices'][0]['message']
                 if json_mode:
                     message['_finish_reason']=value['choices'][0].get('finish_reason')
+                if isinstance(message.get('content'),str) and 'DSML' in message['content']:
+                    calls,clean=parse_dsml_calls(message['content'])
+                    if calls and not message.get('tool_calls'): message['tool_calls']=calls
+                    message['content']=clean
                 if not message.get('content') and not message.get('tool_calls') and not (json_mode and message['_finish_reason']=='length'):
                     raise LLMError('AI 返回了空内容，请换用支持文本输出的模型')
                 return message
