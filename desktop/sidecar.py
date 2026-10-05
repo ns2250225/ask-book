@@ -75,6 +75,8 @@ async def serve(args):
     # Exclusive binding also prevents a second desktop process using this origin.
     if sys.platform == 'win32':
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+    else:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(('127.0.0.1', args.port))
     sock.listen(128)
     sock.setblocking(False)
