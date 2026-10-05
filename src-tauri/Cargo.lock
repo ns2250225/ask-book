@@ -338,7 +338,7 @@ dependencies = [
 
 [[package]]
 name = "bookskill"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "open",
  "rfd",
